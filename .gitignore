@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+pip install -r requirements.txt && pip install uv && cd aviationstack-mcp && uv sync
+
+
+
+dpg-dam3d56k1f9s73eastng-a
+
+
+
+postgresql://new_folder_uqmm_user:sYxIxuVr4R6HAqEovT4xg2DaFYqWk26v@dpg-dam3d56k1f9s73eastng-a/new_folder_uqmm

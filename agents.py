@@ -1,19 +1,30 @@
 import json
+import re
 from typing import Any
-
+from mcp_client import (
+    current_weather,
+    forecast,
+    future_flights,
+    tavily_search,
+)
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import interrupt
 
 from config import get_llm
+
 from mcp_client import (
     current_weather,
     forecast,
-    list_airlines,
-    list_airports,
+    future_flights,
     tavily_search,
 )
+
 from state import TravelState
 
+
+# ============================================================
+# LLM
+# ============================================================
 
 llm = get_llm()
 
@@ -23,6 +34,11 @@ llm = get_llm()
 # ============================================================
 
 def _llm_text(system: str, prompt: str) -> str:
+    """
+    Send a system + user prompt to the configured LLM
+    and return plain text.
+    """
+
     response = llm.invoke(
         [
             SystemMessage(content=system),
@@ -38,11 +54,16 @@ def _llm_text(system: str, prompt: str) -> str:
 # ============================================================
 
 def _json_from_llm(text: str) -> dict:
+    """
+    Extract the first JSON object from an LLM response.
+    """
+
     print("\n========== RAW LLM RESPONSE ==========")
     print(text)
     print("======================================\n")
 
     try:
+
         start = text.index("{")
         end = text.rindex("}") + 1
 
@@ -55,6 +76,7 @@ def _json_from_llm(text: str) -> dict:
         return json.loads(json_text)
 
     except (ValueError, json.JSONDecodeError) as e:
+
         print("\n========== JSON PARSING ERROR ==========")
         print("Error:", repr(e))
         print("LLM response:", text)
@@ -70,11 +92,12 @@ def _json_from_llm(text: str) -> dict:
 # ============================================================
 
 def supervisor_agent(state: TravelState):
+
     query = state["user_query"]
 
     print("\n")
     print("================================================")
-    print("              SUPERVISOR AGENT")
+    print("                SUPERVISOR AGENT")
     print("================================================")
     print("User Query:")
     print(query)
@@ -89,6 +112,7 @@ Determine whether the following request is a valid travel
 planning request.
 
 A valid request can include things such as:
+
 - flights
 - hotels
 - destinations
@@ -123,10 +147,17 @@ User request:
     print(guardrail_raw)
     print("============================================\n")
 
-    guardrail_result = _json_from_llm(guardrail_raw)
+    guardrail_result = _json_from_llm(
+        guardrail_raw
+    )
 
     print("\n========== GUARDRAIL PARSED RESPONSE ==========")
-    print(json.dumps(guardrail_result, indent=2))
+    print(
+        json.dumps(
+            guardrail_result,
+            indent=2,
+        )
+    )
     print("================================================\n")
 
     # --------------------------------------------------------
@@ -140,7 +171,9 @@ User request:
             "Request rejected by input guardrail.",
         )
 
-        print("\n========== GUARDRAIL BLOCKED REQUEST ==========")
+        print(
+            "\n========== GUARDRAIL BLOCKED REQUEST =========="
+        )
         print(reason)
         print("================================================\n")
 
@@ -227,10 +260,18 @@ User request:
     parsed = _json_from_llm(raw)
 
     print("\n========== SUPERVISOR PARSED JSON ==========")
-    print(json.dumps(parsed, indent=2))
+    print(
+        json.dumps(
+            parsed,
+            indent=2,
+        )
+    )
     print("=============================================\n")
 
-    selected = parsed.get("selected_agents", [])
+    selected = parsed.get(
+        "selected_agents",
+        [],
+    )
 
     trip_constraints = parsed.get(
         "trip_constraints",
@@ -245,7 +286,12 @@ User request:
     print("\n========== SUPERVISOR DECISION ==========")
     print("Selected Agents:", selected)
     print("Trip Constraints:")
-    print(json.dumps(trip_constraints, indent=2))
+    print(
+        json.dumps(
+            trip_constraints,
+            indent=2,
+        )
+    )
     print("Reasoning:", reasoning)
     print("=========================================\n")
 
@@ -269,10 +315,21 @@ User request:
 async def flight_agent(state: TravelState):
 
     query = state["user_query"]
-    constraints = state.get("trip_constraints", {})
 
-    destination = constraints.get("destination", "")
-    origin = constraints.get("origin", "")
+    constraints = state.get(
+        "trip_constraints",
+        {},
+    )
+
+    destination = constraints.get(
+        "destination",
+        "",
+    )
+
+    origin = constraints.get(
+        "origin",
+        "",
+    )
 
     print("\n")
     print("================================================")
@@ -285,26 +342,199 @@ async def flight_agent(state: TravelState):
     print("================================================\n")
 
     # --------------------------------------------------------
-    # CALL AVIATIONSTACK MCP
+    # DETERMINE IATA AIRPORT CODES
+    # --------------------------------------------------------
+    #
+    # We intentionally DO NOT call list_airports().
+    #
+    # Your AviationStack plan returned:
+    #
+    # function_access_restricted
+    #
+    # for list_airports().
+    #
+    # Instead, use the LLM to identify the most appropriate
+    # commercial airport IATA codes.
     # --------------------------------------------------------
 
-    airports = await list_airports(
-        destination,
-        limit=10,
+    airport_prompt = f"""
+Determine the most appropriate primary commercial airport
+IATA codes for this trip.
+
+Origin:
+{origin}
+
+Destination:
+{destination}
+
+Return ONLY valid JSON in exactly this format:
+
+{{
+    "origin_iata": "XXX",
+    "destination_iata": "XXX"
+}}
+
+Rules:
+
+- Use a three-letter IATA airport code.
+- Prefer the primary international/commercial airport.
+- For a major city with a well-known primary international
+  airport, use that airport.
+- Do not provide explanations.
+"""
+
+    airport_result = _llm_text(
+        "You are an aviation airport-code specialist. Return strict JSON only.",
+        airport_prompt,
     )
 
-    airlines = await list_airlines(
-        "",
-        limit=10,
+    print(
+        "\n========== AIRPORT CODE ANALYSIS =========="
+    )
+    print(airport_result)
+    print("============================================\n")
+
+    # --------------------------------------------------------
+    # PARSE IATA CODES
+    # --------------------------------------------------------
+
+    origin_iata = ""
+    destination_iata = ""
+
+    try:
+
+        airport_data = _json_from_llm(
+            airport_result
+        )
+
+        origin_iata = str(
+            airport_data.get(
+                "origin_iata",
+                "",
+            )
+        ).upper().strip()
+
+        destination_iata = str(
+            airport_data.get(
+                "destination_iata",
+                "",
+            )
+        ).upper().strip()
+
+    except Exception as e:
+
+        print(
+            "\nCould not parse airport codes:"
+        )
+        print(
+            repr(e)
+        )
+
+    # --------------------------------------------------------
+    # BASIC VALIDATION
+    # --------------------------------------------------------
+
+    if not re.fullmatch(
+        r"[A-Z]{3}",
+        origin_iata,
+    ):
+        origin_iata = ""
+
+    if not re.fullmatch(
+        r"[A-Z]{3}",
+        destination_iata,
+    ):
+        destination_iata = ""
+
+    # --------------------------------------------------------
+    # COMMON FALLBACKS
+    # --------------------------------------------------------
+
+    if not origin_iata:
+
+        if "delhi" in origin.lower():
+            origin_iata = "DEL"
+
+    if not destination_iata:
+
+        if "dubai" in destination.lower():
+            destination_iata = "DXB"
+
+    print(
+        "Origin IATA:",
+        origin_iata,
     )
 
-    print("\n========== AIRPORT MCP DATA ==========")
-    print(airports)
-    print("======================================\n")
+    print(
+        "Destination IATA:",
+        destination_iata,
+    )
 
-    print("\n========== AIRLINE MCP DATA ==========")
-    print(airlines)
-    print("======================================\n")
+    # --------------------------------------------------------
+    # AVIATIONSTACK MCP
+    # --------------------------------------------------------
+
+    flight_data = []
+
+    if destination_iata:
+
+        try:
+
+            flight_data = await future_flights(
+                airport_iata_code=destination_iata,
+                schedule_type="arrival",
+                date="",
+                number_of_flights=10,
+            )
+
+        except Exception as e:
+
+            print(
+                "\n========== AVIATIONSTACK ERROR =========="
+            )
+            print(
+                "Exception type:",
+                type(e),
+            )
+            print(
+                "Exception:",
+                repr(e),
+            )
+            print(
+                "=========================================\n"
+            )
+
+            flight_data = {
+                "error": (
+                    "AviationStack flight lookup failed: "
+                    f"{str(e)}"
+                )
+            }
+
+    else:
+
+        flight_data = {
+            "error": (
+                "Could not determine a valid "
+                "destination airport IATA code."
+            )
+        }
+
+    # --------------------------------------------------------
+    # DEBUG FLIGHT DATA
+    # --------------------------------------------------------
+
+    print(
+        "\n========== AVIATIONSTACK FLIGHT DATA =========="
+    )
+
+    print(
+        flight_data
+    )
+
+    print(
+        "================================================\n"
+    )
 
     # --------------------------------------------------------
     # LLM FLIGHT ANALYSIS
@@ -329,29 +559,41 @@ Destination:
 
 {destination}
 
-Airport MCP data:
+Origin airport IATA:
 
-{str(airports)[:3000]}
+{origin_iata}
 
-Airline MCP data:
+Destination airport IATA:
 
-{str(airlines)[:3000]}
+{destination_iata}
+
+AviationStack MCP flight data:
+
+{str(flight_data)[:5000]}
 
 Include:
 
-1. Likely departure airport(s)
-2. Likely arrival airport(s)
-3. Relevant airlines
-4. Estimated flight duration
-5. Estimated fare range
-6. Peak-season warning if relevant
-7. Booking advice
+1. Likely departure airport
+2. Likely arrival airport
+3. Airlines visible in the MCP data
+4. Flight information visible in the MCP data
+5. Estimated flight duration if reasonably inferable
+6. Estimated fare range, clearly marked as an estimate
+7. Peak-season warning if relevant
+8. Booking advice
 
-Do not pretend that a specific flight or fare is
-live/available unless the provided MCP data explicitly
-contains that information.
+Important rules:
 
-Clearly distinguish estimates from confirmed information.
+- Do not invent flight numbers.
+- Do not invent airlines.
+- Do not claim a flight is available unless the MCP
+  data explicitly supports that claim.
+- Do not claim a fare is live unless the MCP data contains
+  a fare.
+- Clearly distinguish confirmed MCP information from estimates.
+- If AviationStack returns an API restriction or error,
+  clearly state that flight availability could not be
+  confirmed through AviationStack.
 """
 
     result = _llm_text(
@@ -359,7 +601,9 @@ Clearly distinguish estimates from confirmed information.
         prompt,
     )
 
-    print("\n========== FLIGHT AGENT OUTPUT ==========")
+    print(
+        "\n========== FLIGHT AGENT OUTPUT =========="
+    )
     print(result)
     print("=========================================\n")
 
@@ -394,12 +638,16 @@ async def hotel_agent(state: TravelState):
     print("================================================\n")
 
     # --------------------------------------------------------
-    # CALL TAVILY MCP
+    # TAVILY MCP
     # --------------------------------------------------------
 
-    result = await tavily_search(query)
+    result = await tavily_search(
+        query
+    )
 
-    print("\n========== HOTEL SEARCH RESULT ==========")
+    print(
+        "\n========== HOTEL SEARCH RESULT =========="
+    )
     print(result)
     print("=========================================\n")
 
@@ -438,18 +686,26 @@ async def weather_agent(state: TravelState):
     print("================================================\n")
 
     # --------------------------------------------------------
-    # CALL WEATHER MCP
+    # WEATHER MCP
     # --------------------------------------------------------
 
-    weather_data = await current_weather(city)
+    weather_data = await current_weather(
+        city
+    )
 
-    forecast_data = await forecast(city)
+    forecast_data = await forecast(
+        city
+    )
 
-    print("\n========== CURRENT WEATHER ==========")
+    print(
+        "\n========== CURRENT WEATHER =========="
+    )
     print(weather_data)
     print("=====================================\n")
 
-    print("\n========== WEATHER FORECAST ==========")
+    print(
+        "\n========== WEATHER FORECAST =========="
+    )
     print(forecast_data)
     print("======================================\n")
 
@@ -467,7 +723,9 @@ Forecast:
 {forecast_data}
 """
 
-    print("\n========== WEATHER AGENT OUTPUT ==========")
+    print(
+        "\n========== WEATHER AGENT OUTPUT =========="
+    )
     print(result)
     print("==========================================\n")
 
@@ -494,16 +752,32 @@ def budget_agent(state: TravelState):
     print("================================================")
 
     print("\nTrip Constraints:")
-    print(state.get("trip_constraints"))
+    print(
+        state.get(
+            "trip_constraints"
+        )
+    )
 
     print("\nFlight Results:")
-    print(state.get("flight_results"))
+    print(
+        state.get(
+            "flight_results"
+        )
+    )
 
     print("\nHotel Results:")
-    print(state.get("hotel_results"))
+    print(
+        state.get(
+            "hotel_results"
+        )
+    )
 
     print("\nWeather Results:")
-    print(state.get("weather_results"))
+    print(
+        state.get(
+            "weather_results"
+        )
+    )
 
     print("================================================\n")
 
@@ -547,7 +821,9 @@ unverified prices as confirmed prices.
         prompt,
     )
 
-    print("\n========== BUDGET AGENT OUTPUT ==========")
+    print(
+        "\n========== BUDGET AGENT OUTPUT =========="
+    )
     print(result)
     print("=========================================\n")
 
@@ -570,23 +846,43 @@ def itinerary_agent(state: TravelState):
 
     print("\n")
     print("================================================")
-    print("               ITINERARY AGENT")
+    print("                ITINERARY AGENT")
     print("================================================")
 
     print("\nTrip Constraints:")
-    print(state.get("trip_constraints"))
+    print(
+        state.get(
+            "trip_constraints"
+        )
+    )
 
     print("\nFlight Results:")
-    print(state.get("flight_results"))
+    print(
+        state.get(
+            "flight_results"
+        )
+    )
 
     print("\nHotel Results:")
-    print(state.get("hotel_results"))
+    print(
+        state.get(
+            "hotel_results"
+        )
+    )
 
     print("\nWeather Results:")
-    print(state.get("weather_results"))
+    print(
+        state.get(
+            "weather_results"
+        )
+    )
 
     print("\nBudget Results:")
-    print(state.get("budget_results"))
+    print(
+        state.get(
+            "budget_results"
+        )
+    )
 
     print("================================================\n")
 
@@ -627,6 +923,9 @@ Make the output:
 
 If information is estimated or uncertain, clearly
 label it as an estimate.
+
+Do not invent live flight availability,
+hotel availability, or exact prices.
 """
 
     result = _llm_text(
@@ -634,7 +933,9 @@ label it as an estimate.
         prompt,
     )
 
-    print("\n========== ITINERARY OUTPUT ==========")
+    print(
+        "\n========== ITINERARY OUTPUT =========="
+    )
     print(result)
     print("======================================\n")
 
@@ -666,7 +967,7 @@ def human_approval_agent(state: TravelState):
 
     print("\n")
     print("================================================")
-    print("             HUMAN APPROVAL STEP")
+    print("              HUMAN APPROVAL STEP")
     print("================================================\n")
 
     feedback = interrupt(
@@ -690,6 +991,19 @@ def human_approval_agent(state: TravelState):
         }
     )
 
+    # --------------------------------------------------------
+    # SAFETY
+    # --------------------------------------------------------
+
+    if not isinstance(
+        feedback,
+        dict,
+    ):
+        feedback = {
+            "approved": False,
+            "feedback": str(feedback),
+        }
+
     approved = feedback.get(
         "approved",
         False,
@@ -700,10 +1014,23 @@ def human_approval_agent(state: TravelState):
         "",
     )
 
-    print("\n========== HUMAN APPROVAL ==========")
-    print("Approved:", approved)
-    print("Feedback:", human_feedback)
-    print("====================================\n")
+    print(
+        "\n========== HUMAN APPROVAL =========="
+    )
+
+    print(
+        "Approved:",
+        approved,
+    )
+
+    print(
+        "Feedback:",
+        human_feedback,
+    )
+
+    print(
+        "====================================\n"
+    )
 
     return {
         "approved": approved,
@@ -724,11 +1051,18 @@ def final_response_agent(state: TravelState):
 
     print("\n")
     print("================================================")
-    print("             FINAL RESPONSE AGENT")
+    print("              FINAL RESPONSE AGENT")
     print("================================================")
 
-    print("Approved:", state.get("approved"))
-    print("Feedback:", state.get("human_feedback"))
+    print(
+        "Approved:",
+        state.get("approved"),
+    )
+
+    print(
+        "Feedback:",
+        state.get("human_feedback"),
+    )
 
     print("================================================\n")
 
@@ -736,7 +1070,10 @@ def final_response_agent(state: TravelState):
     # APPROVED
     # --------------------------------------------------------
 
-    if state.get("approved", False):
+    if state.get(
+        "approved",
+        False,
+    ):
 
         prompt = f"""
 The human approved this draft itinerary.
@@ -757,8 +1094,10 @@ Budget notes:
 
 Produce a concise but useful final answer.
 
-Do not invent live flight availability, hotel availability,
-or exact prices that were not verified.
+Do not invent live flight availability,
+hotel availability, or exact prices that were
+not verified.
+
 Clearly label estimates.
 """
 
@@ -791,8 +1130,10 @@ Revise the travel plan according to the human feedback.
 
 Produce a polished revised plan.
 
-Do not invent live flight availability, hotel availability,
-or exact prices that were not verified.
+Do not invent live flight availability,
+hotel availability, or exact prices that were
+not verified.
+
 Clearly label estimates.
 """
 
@@ -801,7 +1142,9 @@ Clearly label estimates.
         prompt,
     )
 
-    print("\n========== FINAL RESPONSE ==========")
+    print(
+        "\n========== FINAL RESPONSE =========="
+    )
     print(result)
     print("====================================\n")
 
