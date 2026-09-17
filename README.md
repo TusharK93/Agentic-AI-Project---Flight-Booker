@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Build a Multi-Agent Travel Planning System using LangGraph + MCP | Supervisor Agent + Guardrails + Human-in-the-Loop
 
 
@@ -232,3 +233,7 @@ Run:
 - Real-Time Travel Planning
 - Human in the loop
 - Guardrails
+=======
+# Agentic-AI-Project---Flight-Booker
+An Agentic AI-powered ticket booking system that autonomously understands user requests, searches for available tickets, compares options, and assists with the booking process.
+>>>>>>> 2766853dec538bcbe08bc2725de3b4c7574076f8
