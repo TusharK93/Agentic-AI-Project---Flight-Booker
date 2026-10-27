@@ -291,3 +291,6 @@ No license has been specified here. If you intend to make the project open sourc
 ⭐ If you find this project interesting, consider starring the repository on GitHub!
 
 **Built with LangGraph, LangChain, MCP, and agentic AI to make travel planning smarter and more budget-conscious.**
+<p align="center">
+  <img src="agentic.jpg" alt="Multi Agentic AI traveller Planner end-to-end pipeline" width="100%">
+</p>
