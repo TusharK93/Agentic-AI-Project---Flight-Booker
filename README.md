@@ -1,5 +1,4 @@
-# ✈️ Agentic AI Travel Planner & Flight Booker
-
+# ✈️ Agentic AI Travel Planner & Flight Booker (End-To-End)
 An AI-powered, budget-aware travel planning application that helps users plan trips by coordinating flight searches, hotel options, weather information, and budget constraints through a multi-agent architecture.
 
 🔗 **Live Demo:** [Try the Application](https://agentic-ai-project-flight-booker-2-8v2r.onrender.com/)
